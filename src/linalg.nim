@@ -1,4 +1,5 @@
 import std/complex
+import math
 
 type
   Vec2*[T] = tuple[x: T, y: T]
@@ -23,6 +24,9 @@ proc `*`*[T](a: Vec2[T], b: T): Vec2[T] =
 proc `/`*[T](a: Vec2[T], b: T): Vec2[T] =
   result.x = a.x / b
   result.y = a.y / b
+
+proc abs*[T](a: Vec2[T]): T =
+  result = sqrt(a.x * a.x + a.y * a.y)
 
 proc abs2*[T](a: Vec2[T]): T =
   result = a.x * a.x + a.y * a.y

@@ -23,13 +23,16 @@ proc dealias[Nx, Ny: static int](field: var Field[Nx, Ny, Complex64]) =
 type
   Simulation[Nx, Ny: static int] = ref object
     fourier_vorticity*: Field[Ny, Nx, Complex64]
-    Δt: float64
+    nonlinear: Field[Ny, Nx, Complex64]
     kinematic_viscosity: float64
+    cfl: float64
+    time*: float64
+    Δt: float64
 
 proc create_simulation*[Nx, Ny: static int](
   vorticity: Field[Ny, Nx, float64],
   kinematic_viscosity: float64,
-  Δt: float64,
+  cfl: float64,
 ): Simulation[Nx, Ny] =
   var fourier_vorticity = createField[Nx, Ny, Complex64](complex(0.0))
   for i in low(FieldIndex[Nx, Ny])..high(FieldIndex[Nx, Ny]):
@@ -41,7 +44,9 @@ proc create_simulation*[Nx, Ny: static int](
   result = Simulation[Nx, Ny](
     fourier_vorticity: fourier_vorticity,
     kinematic_viscosity: kinematic_viscosity,
-    Δt: Δt,
+    nonlinear: create_field[Ny, Nx, Complex64](complex(0.0)),
+    cfl: cfl,
+    Δt: 0.0,
   )
 
 proc calculate_velocity[Nx, Ny: static int](
@@ -111,28 +116,59 @@ proc calculate_nonlinear[Nx, Ny: static int](
   result = nonlinear
 
 proc step*[Nx, Ny: static int](simulation: Simulation[Nx, Ny]) =
-  let Δt = simulation.Δt
+  let time = simulation.time
+  let Δx = 2 * PI / Nx
+  let Δt_old = simulation.Δt
+  let cfl = simulation.cfl
   let kinematic_viscosity = simulation.kinematic_viscosity
   var fourier_ω = simulation.fourier_vorticity
   let velocity = calculate_velocity simulation.fourier_vorticity
-  let nonlinear = calculate_nonlinear(velocity, simulation.fourier_vorticity)
-  
-  for x, y in fourier_ω.indices:
-    let k = (
-      x: k(x, Nx),
-      y: k(y, Ny),
-    )
+  let nonlinear_old = simulation.nonlinear
+  let nonlinear_new = calculate_nonlinear(velocity, simulation.fourier_vorticity)
 
-    if k.x == 0 and k.y == 0:
-      fourier_ω[x, y] = complex(0.0)
-      continue
-    
-    let E = exp(-kinematic_viscosity * k.abs2 * Δt)
-    let ω = fourier_ω[x, y]
-    let B = (1.0 - E) / (kinematic_viscosity * k.abs2)
-    let N = nonlinear[x, y]
+  var max_velocity = 0.0
+  for v in velocity.data: 
+    if v.abs > max_velocity: 
+      max_velocity = v.abs
+  let Δt_new = cfl * Δx / max_velocity
 
-    fourier_ω[x, y] = E * ω + B * N
+  if time == 0.0:
+    for x, y in fourier_ω.indices:
+      let k = (
+        x: k(x, Nx),
+        y: k(y, Ny),
+      )
+
+      if k.x == 0 and k.y == 0:
+        continue
+
+      let E = exp(-kinematic_viscosity * k.abs2 * Δt_new)
+      let ω = fourier_ω[x, y]
+      let B = (1.0 - E) / (kinematic_viscosity * k.abs2)
+      let N = nonlinear_new[x, y]
+
+      fourier_ω[x, y] = E * ω + B * N
+  else:
+    let β_10 = 0.5 * Δt_new / Δt_old * (Δt_new + 2 * Δt_old)
+    let β_11 = -0.5 * Δt_new * Δt_new / Δt_old
+
+    for x, y in fourier_ω.indices:
+      let k = (
+        x: k(x, Nx),
+        y: k(y, Ny),
+      )
+
+      if k.x == 0 and k.y == 0:
+        continue
+
+      let E_new = exp(-kinematic_viscosity * Δt_new * k.abs2)
+      let E_old = exp(-kinematic_viscosity * Δt_old * k.abs2)
+      let ω = fourier_ω[x, y]
+      let N_new = nonlinear_new[x, y]
+      let N_old = nonlinear_old[x, y]
+
+      fourier_ω[x, y] = E_new * (ω + β_10 * N_new + β_11 * E_old * N_old)
+
   dealias fourier_ω
 
   var test_ω = create_field[Nx, Ny, Complex64](complex(0.0))
@@ -140,10 +176,13 @@ proc step*[Nx, Ny: static int](simulation: Simulation[Nx, Ny]) =
     test_ω[x, y] = fourier_ω[x, y]
 
   ifft test_ω
-  
+
   for c in test_ω.data:
     assert(c.im.abs < tolerance, msg = $c.im.abs)
 
+  simulation.nonlinear = nonlinear_new
+  simulation.Δt = Δt_new
+  simulation.time += Δt_new
   simulation.fourier_vorticity = fourier_ω
 
 proc visualize*[Nx, Ny: static int](simulation: Simulation[Nx, Ny]): Image =

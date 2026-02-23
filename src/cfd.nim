@@ -8,7 +8,7 @@ import simulation
 
 proc main() =
   const kinematic_velocity = 1e-2
-  const Δt = 0.01
+  const cfl = 0.1
   const max_time = 5.0
 
   const nx = 128
@@ -19,16 +19,14 @@ proc main() =
   for x, y in vorticity.indices:
     vorticity[x, y] = -2 * sin(x / nx * 2 * PI) * sin(y / ny * 2 * PI)
 
-  let simulation = create_simulation(vorticity, kinematic_velocity, Δt)
+  let simulation = create_simulation(vorticity, kinematic_velocity, cfl)
 
   simulation.visualize.write_file("initial.png")
 
   let start = get_mono_time()
 
-  var t = 0.0
-  while t < max_time:
+  while simulation.time < max_time:
     simulation.step()
-    t += Δt
 
   let finish = get_mono_time()
 
