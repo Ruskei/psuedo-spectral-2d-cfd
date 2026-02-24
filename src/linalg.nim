@@ -13,6 +13,10 @@ proc `+=`*[T](a: var Vec2[T], b: Vec2[T]) =
   a.x += b.x
   a.y += b.y
 
+proc `+`*[T](a, b: Vec2[T]): Vec2[T] =
+  result.x = a.x + b.x
+  result.y = a.y + b.y
+
 proc `-`*[T](a, b: Vec2[T]): Vec2[T] =
   result.x = a.x - b.x
   result.y = a.y - b.y
@@ -24,6 +28,10 @@ proc `*`*[T](a: Vec2[T], b: T): Vec2[T] =
 proc `/`*[T](a: Vec2[T], b: T): Vec2[T] =
   result.x = a.x / b
   result.y = a.y / b
+
+proc `⊙/`*[T](a: Vec2[T], b: Vec2[T]): Vec2[T] =
+  result.x = a.x / b.x
+  result.y = a.y / b.y
 
 proc abs*[T](a: Vec2[T]): T =
   result = sqrt(a.x * a.x + a.y * a.y)

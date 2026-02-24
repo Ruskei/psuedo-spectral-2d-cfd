@@ -12,6 +12,24 @@ proc k(i, N: int): float64 =
   elif i == N div 2: 0.0
   else: float64(i - N)
 
+proc smooth_gaussian*[Nx, Ny: static int](
+  sharp_mask: Field[Nx, Ny, float64],
+  smoothing: float64,
+): Field[Nx, Ny, float64] =
+  var smooth_mask = create_field[Nx, Ny, float64](0.0)
+  var fourier_mask = create_field[Nx, Ny, Complex64](complex(0.0))
+  for x, y in sharp_mask.indices:
+    fourier_mask[x, y] = complex(sharp_mask[x, y])
+  fft fourier_mask
+  for x, y in fourier_mask.indices:
+    let kx = k(x, Nx)
+    let ky = k(y, Ny)
+    fourier_mask[x, y] = fourier_mask[x, y] * exp(-smoothing * (kx * kx / Nx / Nx + ky * ky / Ny / Ny))
+  ifft fourier_mask
+  for x, y in smooth_mask.indices:
+    smooth_mask[x, y] = fourier_mask[x, y].re
+  result = smooth_mask
+
 proc dealias[Nx, Ny: static int](field: var Field[Nx, Ny, Complex64]) =
   const Kx = Nx div 3
   const Ky = Ny div 3
@@ -22,17 +40,24 @@ proc dealias[Nx, Ny: static int](field: var Field[Nx, Ny, Complex64]) =
       field[x, y] = complex(0.0)
 type
   Simulation[Nx, Ny: static int] = ref object
-    fourier_vorticity*: Field[Ny, Nx, Complex64]
+    fourier_vorticity*: Field[Nx, Ny, Complex64]
     nonlinear: Field[Ny, Nx, Complex64]
+    object_velocity*: Field[Ny, Nx, Vec2f]
+    mask*: Field[Ny, Nx, float64]
     kinematic_viscosity: float64
+    permeability: float64
     cfl: float64
     time*: float64
     Δt: float64
 
 proc create_simulation*[Nx, Ny: static int](
   vorticity: Field[Ny, Nx, float64],
+  object_velocity: Field[Ny, Nx, Vec2f],
+  sharp_mask: var Field[Ny, Nx, float64],
   kinematic_viscosity: float64,
+  permeability: float64,
   cfl: float64,
+  smoothing: float64,
 ): Simulation[Nx, Ny] =
   var fourier_vorticity = createField[Nx, Ny, Complex64](complex(0.0))
   for i in low(FieldIndex[Nx, Ny])..high(FieldIndex[Nx, Ny]):
@@ -43,9 +68,12 @@ proc create_simulation*[Nx, Ny: static int](
 
   result = Simulation[Nx, Ny](
     fourier_vorticity: fourier_vorticity,
-    kinematic_viscosity: kinematic_viscosity,
+    object_velocity: object_velocity,
+    mask: smooth_gaussian(sharp_mask, smoothing),
     nonlinear: create_field[Ny, Nx, Complex64](complex(0.0)),
+    kinematic_viscosity: kinematic_viscosity,
     cfl: cfl,
+    permeability: permeability,
     Δt: 0.0,
   )
 
@@ -79,6 +107,9 @@ proc calculate_velocity[Nx, Ny: static int](
 proc calculate_nonlinear[Nx, Ny: static int](
   velocity: Field[Nx, Ny, Vec2f],
   fourier_vorticity: Field[Nx, Ny, Complex64],
+  object_velocity: Field[Nx, Ny, Vec2f],
+  mask: Field[Nx, Ny, float64],
+  permeability: float64,
 ): Field[Nx, Ny, Complex64] =
   var test_ω = create_field[Nx, Ny, Complex64](complex(0.0))
   for x, y in fourier_vorticity.indices:
@@ -103,16 +134,35 @@ proc calculate_nonlinear[Nx, Ny: static int](
   ifft ∇ω_x
   ifft ∇ω_y
 
+  var ∂gx∂y = create_field[Nx, Ny, Complex64](complex(0.0))
+  var ∂gy∂x = create_field[Nx, Ny, Complex64](complex(0.0))
+  for x, y in mask.indices:
+    let m = mask[x, y]
+    let v = velocity[x, y]
+    let ov = object_velocity[x, y]
+    ∂gx∂y[x, y] = complex(1.0 * m / permeability * (v.x - ov.x))
+    ∂gy∂x[x, y] = complex(1.0 * m / permeability * (v.y - ov.y))
+
+  fft ∂gx∂y
+  fft ∂gy∂x
+
+  dealias ∂gx∂y
+  dealias ∂gy∂x
+
+  for x, y in mask.indices:
+    ∂gx∂y[x, y] = ∂gx∂y[x, y] * im(1.0) * k(y, Ny)
+    ∂gy∂x[x, y] = ∂gy∂x[x, y] * im(1.0) * k(x, Nx)
+
   for x, y in nonlinear.indices:
     let v = velocity[x, y]
     assert(∇ω_x[x, y].im.abs < tolerance, msg = $∇ω_x[x, y].im.abs)
     assert(∇ω_y[x, y].im.abs < tolerance, msg = $∇ω_y[x, y].im.abs)
-    nonlinear[x, y] = complex(
-      -(v.x * ∇ω_x[x, y].re + v.y * ∇ω_y[x, y].re)
-    )
-
+    nonlinear[x, y] = complex(-(v.x * ∇ω_x[x, y].re + v.y * ∇ω_y[x, y].re))
   fft nonlinear
+  for x, y in nonlinear.indices:
+    nonlinear[x,y] = nonlinear[x,y] + (∂gx∂y[x,y] - ∂gy∂x[x,y])
   dealias nonlinear
+
   result = nonlinear
 
 proc step*[Nx, Ny: static int](simulation: Simulation[Nx, Ny]) =
@@ -120,17 +170,26 @@ proc step*[Nx, Ny: static int](simulation: Simulation[Nx, Ny]) =
   let Δx = 2 * PI / Nx
   let Δt_old = simulation.Δt
   let cfl = simulation.cfl
+  let permeability = simulation.permeability
   let kinematic_viscosity = simulation.kinematic_viscosity
   var fourier_ω = simulation.fourier_vorticity
   let velocity = calculate_velocity simulation.fourier_vorticity
   let nonlinear_old = simulation.nonlinear
-  let nonlinear_new = calculate_nonlinear(velocity, simulation.fourier_vorticity)
+  let nonlinear_new = calculate_nonlinear(
+    velocity, 
+    simulation.fourier_vorticity,
+    simulation.object_velocity,
+    simulation.mask,
+    simulation.permeability,
+  )
 
   var max_velocity = 0.0
   for v in velocity.data: 
     if v.abs > max_velocity: 
       max_velocity = v.abs
-  let Δt_new = cfl * Δx / max_velocity
+  let Δt_new = 
+    if cfl * Δx / max_velocity > permeability: permeability
+    else: cfl * Δx / max_velocity
 
   if time == 0.0:
     for x, y in fourier_ω.indices:
@@ -197,8 +256,6 @@ proc visualize*[Nx, Ny: static int](simulation: Simulation[Nx, Ny]): Image =
 
   var max_abs = 0.0
   for c in ω.data: max_abs = if c.re.abs > max_abs: c.re.abs else: max_abs
-
-  echo "max_abs: ", $max_abs
 
   var image = newImage(Nx, Ny)
   for x, y in ω.indices:
