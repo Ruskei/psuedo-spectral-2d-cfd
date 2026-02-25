@@ -34,8 +34,8 @@ proc set_circle_χ[Nx, Ny: static int](
   smooth_gaussian(χ, smoothing, extents)
 
 proc main() =
-  const max_time = 0.4
-  const Nx = 128
+  const max_time = 0.8
+  const Nx = 256
   const Ny = 128
   const extents = (8, 4)
   const constants = SimulationConstants(
@@ -46,8 +46,9 @@ proc main() =
   )
 
   const o = (1, 2)
-  const v = (10, 0)
-  const r = 0.5
+  const v = (8, 0)
+  const r = 0.8
+  const stride = 8
 
   let startup = get_mono_time()
 
@@ -60,17 +61,28 @@ proc main() =
 
   var sim = create_simulation(ω, χ, χ_v, extents, constants)
 
-  sim.visualize_vorticity(VorticityView.vvLinear).write_file("images/initial.png")
+  sim.visualize_vorticity(VorticityView.vv_linear).write_file("images/initial.png")
 
   let finished_startup = get_mono_time()
+
+  var snapshots_taken = 0
+  var snapshot_interval = 0.2
 
   while sim.t < max_time:
     set_circle_χ(sim.χ, extents, sim.t, o, v, r, constants.smoothing)
     sim.step()
 
+    if sim.t > float64(snapshots_taken + 1) * snapshot_interval:
+      inc snapshots_taken
+      var progress_image = sim.visualize_vorticity
+      draw_quiver_overlay(progress_image, sim, stride, qcm_black)
+      progress_image.write_file("images/progress" & $sim.t & ".png")
+
   let finished_sim = get_mono_time()
 
-  sim.visualize_vorticity(VorticityView.vvLinear).write_file("images/final.png")
+  var final_image = sim.visualize_vorticity
+  draw_quiver_overlay(final_image, sim, stride, qcm_black)
+  final_image.write_file("images/final.png")
 
   echo "startup took ", in_milliseconds(finished_startup - startup), "ms"
   echo "stepping took ", in_milliseconds(finished_sim - finished_startup), "ms"

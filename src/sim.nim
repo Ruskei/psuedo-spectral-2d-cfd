@@ -200,71 +200,200 @@ proc step*[Nx, Ny: static int](
 
 type
   VorticityView* = enum
-    vvLinear,
-    vvSymLog
+    vv_linear,
+    vv_sym_log
 
 proc visualize_vorticity*[Nx, Ny: static int](
   sim: Simulation[Nx, Ny],
-  view: VorticityView = vvLinear,
+  view: VorticityView = vv_linear,
 ): Image =
-  var ω = create_field[Nx, Ny, Complex64](complex(0.0))
-  for x, y in sim.Fω.indices:
-    ω[x, y] = sim.Fω[x, y]
-  ifft ω
+  # internal helpers / constants so colors are not hardcoded inline
+  proc clamp01_255(x: float64): float64 =
+    if x < 0.0:
+      0.0
+    elif x > 255.0:
+      255.0
+    else:
+      x
 
-  for c in ω.data:
+  proc smoothstep01(u: float64): float64 =
+    u * u * (3.0 - 2.0 * u)
+
+  type
+    RgbColor = tuple[r, g, b: float64]
+
+  let zero_field_color: RgbColor = (245.0, 245.0, 245.0)
+  let neg_color: RgbColor = (49.0, 54.0, 149.0)
+  let mid_color: RgbColor = (247.0, 247.0, 247.0)
+  let pos_color: RgbColor = (165.0, 0.0, 38.0)
+
+  var omega = create_field[Nx, Ny, Complex64](complex(0.0))
+  for x, y in sim.Fω.indices:
+    omega[x, y] = sim.Fω[x, y]
+  ifft omega
+
+  for c in omega.data:
     assert c.im.abs < tolerance
 
-  var maxAbs = 0.0
-  for c in ω.data:
+  var max_abs = 0.0
+  for c in omega.data:
     let a = abs(c.re)
-    if a > maxAbs: maxAbs = a
+    if a > max_abs:
+      max_abs = a
 
-  var image = newImage(Nx, Ny)
+  var image = new_image(Nx, Ny)
 
-  if maxAbs <= 0.0:
+  if max_abs <= 0.0:
     for i in 0 ..< image.data.len:
-      image.data[i] = rgba(245'u8, 245'u8, 245'u8, 255'u8)
+      image.data[i] = rgba(
+        uint8(zero_field_color.r),
+        uint8(zero_field_color.g),
+        uint8(zero_field_color.b),
+        255'u8
+      )
     return image
 
-  let linThresh = 0.03
-  let symlogDen = 1.0 + ln(1.0 / linThresh)
+  let lin_thresh = 0.03
+  let symlog_den = 1.0 + ln(1.0 / lin_thresh)
 
-  for x, y in ω.indices:
-    var a = ω[x, y].re / maxAbs
+  for x, y in omega.indices:
+    var a = omega[x, y].re / max_abs
 
-    if a > 1.0: a = 1.0
-    elif a < -1.0: a = -1.0
+    if a > 1.0:
+      a = 1.0
+    elif a < -1.0:
+      a = -1.0
 
     var s = a
-    if view == vvSymLog:
-      let aa = abs(a)
-      if aa <= linThresh:
-        s = (a / linThresh) * (1.0 / symlogDen)
+    if view == vv_sym_log:
+      let abs_a = abs(a)
+      if abs_a <= lin_thresh:
+        s = (a / lin_thresh) * (1.0 / symlog_den)
       else:
-        let signA = (if a < 0.0: -1.0 else: 1.0)
-        s = signA * ((1.0 + ln(aa / linThresh)) / symlogDen)
+        let sign_a = (if a < 0.0: -1.0 else: 1.0)
+        s = sign_a * ((1.0 + ln(abs_a / lin_thresh)) / symlog_den)
 
     let t = 0.5 * (s + 1.0)
 
     var r, g, b: float64
     if t <= 0.5:
       let u = t / 0.5
-      let w = u * u * (3.0 - 2.0 * u)
-      r = 49.0  + (247.0 - 49.0)  * w
-      g = 54.0  + (247.0 - 54.0)  * w
-      b = 149.0 + (247.0 - 149.0) * w
+      let w = smoothstep01(u)
+      r = neg_color.r + (mid_color.r - neg_color.r) * w
+      g = neg_color.g + (mid_color.g - neg_color.g) * w
+      b = neg_color.b + (mid_color.b - neg_color.b) * w
     else:
       let u = (t - 0.5) / 0.5
-      let w = u * u * (3.0 - 2.0 * u)
-      r = 247.0 + (165.0 - 247.0) * w
-      g = 247.0 + (0.0   - 247.0) * w
-      b = 247.0 + (38.0  - 247.0) * w
+      let w = smoothstep01(u)
+      r = mid_color.r + (pos_color.r - mid_color.r) * w
+      g = mid_color.g + (pos_color.g - mid_color.g) * w
+      b = mid_color.b + (pos_color.b - mid_color.b) * w
 
-    if r < 0.0: r = 0.0 elif r > 255.0: r = 255.0
-    if g < 0.0: g = 0.0 elif g > 255.0: g = 255.0
-    if b < 0.0: b = 0.0 elif b > 255.0: b = 255.0
+    r = clamp01_255(r)
+    g = clamp01_255(g)
+    b = clamp01_255(b)
 
     image.data[y * Nx + x] = rgba(uint8(r), uint8(g), uint8(b), 255'u8)
 
   result = image
+
+type
+  Quiver_color_mode* = enum
+    qcm_white,
+    qcm_black
+
+proc draw_quiver_overlay*[Nx, Ny: static int](
+  image: var Image,
+  sim: Simulation[Nx, Ny],
+  stride: int,
+  color_mode: Quiver_color_mode = qcm_white,
+) =
+  ## Draws a simple quiver overlay (centered line segments) on top of an existing image.
+  ## One line is drawn every `stride` cells.
+  ##
+  ## Assumes:
+  ## - sim.v is a physical-space velocity field (not Fourier-space)
+  ## - image dimensions match Nx x Ny
+
+  let min_stride = 1
+  let sample_stride =
+    if stride < min_stride: min_stride
+    else: stride
+
+  let line_length_fraction_of_stride = 0.9   # max line length relative to stride
+  let min_visible_speed = 1e-12              # avoids unstable direction at near-zero speed
+  let min_drawn_half_length = 0.0            # set >0 if you want tiny arrows/lines always visible
+  let line_alpha = 255'u8
+
+  let line_color =
+    case color_mode
+    of qcm_white: rgba(255'u8, 255'u8, 255'u8, line_alpha)
+    of qcm_black: rgba(0'u8, 0'u8, 0'u8, line_alpha)
+
+  # Compute global max speed for normalization.
+  var max_speed = 0.0
+  for v in sim.v.data:
+    let speed = v.abs
+    if speed > max_speed:
+      max_speed = speed
+
+  if max_speed <= min_visible_speed:
+    return
+
+  let max_half_length = 0.5 * line_length_fraction_of_stride * float64(sample_stride)
+
+  # Sample the field on a configurable stride.
+  var y = 0
+  while y < Ny:
+    var x = 0
+    while x < Nx:
+      let v = sim.v[x, y]
+      let speed = v.abs
+
+      if speed > min_visible_speed:
+        let nx_dir = v.x / speed
+        let ny_dir = v.y / speed
+
+        var half_length = max_half_length * (speed / max_speed)
+        if half_length < min_drawn_half_length:
+          half_length = min_drawn_half_length
+
+        # Centered line endpoints in floating-point image coordinates.
+        let x_center = float64(x)
+        let y_center = float64(y)
+
+        let x0_f = x_center - nx_dir * half_length
+        let y0_f = y_center - ny_dir * half_length
+        let x1_f = x_center + nx_dir * half_length
+        let y1_f = y_center + ny_dir * half_length
+
+        # Integer raster endpoints (rounded to nearest pixel).
+        var x0 = int(round(x0_f))
+        var y0 = int(round(y0_f))
+        var x1 = int(round(x1_f))
+        var y1 = int(round(y1_f))
+
+        # Simple Bresenham line rasterization (single-pixel line).
+        var dx = abs(x1 - x0)
+        var dy = abs(y1 - y0)
+        let sx = (if x0 < x1: 1 else: -1)
+        let sy = (if y0 < y1: 1 else: -1)
+        var err = dx - dy
+
+        while true:
+          if x0 >= 0 and x0 < Nx and y0 >= 0 and y0 < Ny:
+            image.data[y0 * Nx + x0] = line_color
+
+          if x0 == x1 and y0 == y1:
+            break
+
+          let e2 = 2 * err
+          if e2 > -dy:
+            err -= dy
+            x0 += sx
+          if e2 < dx:
+            err += dx
+            y0 += sy
+
+      x += sample_stride
+    y += sample_stride
