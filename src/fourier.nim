@@ -1,11 +1,7 @@
-import field
 import math
 import std/assertions
 import std/complex
-
-proc `/=`[T](x: var Complex[T]; y: T) =
-  x.re /= y
-  x.im /= y
+import field
 
 proc raw_fft(data: var open_array[Complex64], offset: int, stride: int, length: int) =
   if length == 1: return
@@ -50,7 +46,7 @@ proc raw_fft(data: var open_array[Complex64], offset: int, stride: int, length: 
 
     inc i
 
-## Performs FFT in-place with a negative exponent and 1/(4π^2) normalization
+## Performs FFT in-place with a negative exponent and normalization
 proc fft*[Nx, Ny: static int](field: var Field[Nx, Ny, Complex64]) =
   assert is_power_of_two Nx
   assert is_power_of_two Ny
@@ -75,3 +71,12 @@ proc ifft*[Nx, Ny: static int](field: var Field[Nx, Ny, Complex64]) =
   for entry in field.data.mitems: entry = entry.conjugate
   let norm = 1.0 / float64(Nx * Ny)
   for entry in field.data.mitems: entry = entry * norm
+
+proc dealias*[Nx, Ny: static int](field: var Field[Nx, Ny, Complex64]) =
+  const Kx = Nx div 3
+  const Ky = Ny div 3
+  for x, y in field.indices:
+    let kx = (if x < Nx div 2: x else: x - Nx)
+    let ky = (if y < Ny div 2: y else: y - Ny)
+    if kx.abs > Kx or ky.abs > Ky:
+      field[x, y] = complex(0.0)
