@@ -298,7 +298,7 @@ proc visualize_vorticity*[Nx, Ny: static int](
   result = image
 
 type
-  Quiver_color_mode* = enum
+  quiver_color_mode* = enum
     qcm_white,
     qcm_black
 
@@ -306,10 +306,13 @@ proc draw_quiver_overlay*[Nx, Ny: static int](
   image: var Image,
   sim: Simulation[Nx, Ny],
   stride: int,
-  color_mode: Quiver_color_mode = qcm_white,
+  color_mode: quiver_color_mode = qcm_white,
 ) =
-  ## Draws a simple quiver overlay (centered line segments) on top of an existing image.
+  ## Draws a simple quiver overlay (directed line segments) on top of an existing image.
   ## One line is drawn every `stride` cells.
+  ##
+  ## Direction is shown by drawing from the sample point in the direction of velocity.
+  ## (No arrowhead; just a signed line segment.)
   ##
   ## Assumes:
   ## - sim.v is a physical-space velocity field (not Fourier-space)
@@ -320,9 +323,9 @@ proc draw_quiver_overlay*[Nx, Ny: static int](
     if stride < min_stride: min_stride
     else: stride
 
-  let line_length_fraction_of_stride = 0.9   # max line length relative to stride
-  let min_visible_speed = 1e-12              # avoids unstable direction at near-zero speed
-  let min_drawn_half_length = 0.0            # set >0 if you want tiny arrows/lines always visible
+  let line_length_fraction_of_stride = 0.9
+  let min_visible_speed = 1e-12
+  let min_drawn_length = 0.0
   let line_alpha = 255'u8
 
   let line_color =
@@ -340,9 +343,8 @@ proc draw_quiver_overlay*[Nx, Ny: static int](
   if max_speed <= min_visible_speed:
     return
 
-  let max_half_length = 0.5 * line_length_fraction_of_stride * float64(sample_stride)
+  let max_line_length = line_length_fraction_of_stride * float64(sample_stride)
 
-  # Sample the field on a configurable stride.
   var y = 0
   while y < Ny:
     var x = 0
@@ -351,34 +353,30 @@ proc draw_quiver_overlay*[Nx, Ny: static int](
       let speed = v.abs
 
       if speed > min_visible_speed:
-        let nx_dir = v.x / speed
-        let ny_dir = v.y / speed
+        let x_dir = v.x / speed
+        let y_dir = v.y / speed
 
-        var half_length = max_half_length * (speed / max_speed)
-        if half_length < min_drawn_half_length:
-          half_length = min_drawn_half_length
+        var line_length = max_line_length * (speed / max_speed)
+        if line_length < min_drawn_length:
+          line_length = min_drawn_length
 
-        # Centered line endpoints in floating-point image coordinates.
-        let x_center = float64(x)
-        let y_center = float64(y)
+        # Tail is the sample point; tip points downstream (signed direction).
+        let x_tail_f = float64(x)
+        let y_tail_f = float64(y)
+        let x_tip_f = x_tail_f + x_dir * line_length
+        let y_tip_f = y_tail_f + y_dir * line_length
 
-        let x0_f = x_center - nx_dir * half_length
-        let y0_f = y_center - ny_dir * half_length
-        let x1_f = x_center + nx_dir * half_length
-        let y1_f = y_center + ny_dir * half_length
+        var x0 = int(round(x_tail_f))
+        var y0 = int(round(y_tail_f))
+        let x1 = int(round(x_tip_f))
+        let y1 = int(round(y_tip_f))
 
-        # Integer raster endpoints (rounded to nearest pixel).
-        var x0 = int(round(x0_f))
-        var y0 = int(round(y0_f))
-        var x1 = int(round(x1_f))
-        var y1 = int(round(y1_f))
-
-        # Simple Bresenham line rasterization (single-pixel line).
-        var dx = abs(x1 - x0)
-        var dy = abs(y1 - y0)
-        let sx = (if x0 < x1: 1 else: -1)
-        let sy = (if y0 < y1: 1 else: -1)
-        var err = dx - dy
+        # Bresenham line rasterization (single-pixel line).
+        let dx_abs = abs(x1 - x0)
+        let dy_abs = abs(y1 - y0)
+        let x_step = (if x0 < x1: 1 else: -1)
+        let y_step = (if y0 < y1: 1 else: -1)
+        var error = dx_abs - dy_abs
 
         while true:
           if x0 >= 0 and x0 < Nx and y0 >= 0 and y0 < Ny:
@@ -387,13 +385,13 @@ proc draw_quiver_overlay*[Nx, Ny: static int](
           if x0 == x1 and y0 == y1:
             break
 
-          let e2 = 2 * err
-          if e2 > -dy:
-            err -= dy
-            x0 += sx
-          if e2 < dx:
-            err += dx
-            y0 += sy
+          let double_error = 2 * error
+          if double_error > -dy_abs:
+            error -= dy_abs
+            x0 += x_step
+          if double_error < dx_abs:
+            error += dx_abs
+            y0 += y_step
 
       x += sample_stride
     y += sample_stride

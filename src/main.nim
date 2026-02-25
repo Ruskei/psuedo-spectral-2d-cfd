@@ -35,8 +35,8 @@ proc set_circle_χ[Nx, Ny: static int](
 
 proc main() =
   const max_time = 0.8
-  const Nx = 256
-  const Ny = 128
+  const Nx = 128
+  const Ny = 64
   const extents = (8, 4)
   const constants = SimulationConstants(
     cfl: 0.1,
@@ -61,7 +61,7 @@ proc main() =
 
   var sim = create_simulation(ω, χ, χ_v, extents, constants)
 
-  sim.visualize_vorticity(VorticityView.vv_linear).write_file("images/initial.png")
+  sim.visualize_vorticity.write_file("images/initial.png")
 
   let finished_startup = get_mono_time()
 
