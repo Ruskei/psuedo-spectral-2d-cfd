@@ -306,7 +306,7 @@ proc draw_quiver_overlay*[Nx, Ny: static int](
   image: var Image,
   sim: Simulation[Nx, Ny],
   stride: int,
-  color_mode: quiver_color_mode = qcm_white,
+  color_mode: quiver_color_mode = qcm_black,
 ) =
   ## Draws a simple quiver overlay (directed line segments) on top of an existing image.
   ## One line is drawn every `stride` cells.
@@ -395,3 +395,123 @@ proc draw_quiver_overlay*[Nx, Ny: static int](
 
       x += sample_stride
     y += sample_stride
+
+proc draw_streamline_overlay*[Nx, Ny: static int](
+  image: var Image,
+  sim: Simulation[Nx, Ny],
+  stride: int,
+  color_mode: quiver_color_mode = qcm_black,
+) =
+  ## Draws simple streamline overlays on top of an existing image.
+  ## Streamlines are seeded every `stride` cells and traced using nearest-neighbor
+  ## velocity sampling with fixed pixel step length.
+  ##
+  ## Assumes:
+  ## - sim.v is a physical-space velocity field (not Fourier-space)
+  ## - image dimensions match Nx x Ny
+
+  let min_stride = 1
+  let sample_stride =
+    if stride < min_stride: min_stride
+    else: stride
+
+  let min_visible_speed = 1e-12
+  let step_size_pixels = 1.0              # integration step in pixels
+  let max_stream_steps = 24               # per direction
+  let line_alpha = 255'u8
+
+  let line_color =
+    case color_mode
+    of qcm_white: rgba(255'u8, 255'u8, 255'u8, line_alpha)
+    of qcm_black: rgba(0'u8, 0'u8, 0'u8, line_alpha)
+
+  let x_min = 0.0
+  let y_min = 0.0
+  let x_max = float64(Nx - 1)
+  let y_max = float64(Ny - 1)
+
+  var seed_y = 0
+  while seed_y < Ny:
+    var seed_x = 0
+    while seed_x < Nx:
+      # Trace both directions from the seed to form a streamline through the point.
+      for direction_index in 0 .. 1:
+        let direction_sign =
+          if direction_index == 0: -1.0
+          else: 1.0
+
+        var x_pos = float64(seed_x)
+        var y_pos = float64(seed_y)
+
+        var step_count = 0
+        while step_count < max_stream_steps:
+          # Stop if outside image bounds.
+          if x_pos < x_min or x_pos > x_max or y_pos < y_min or y_pos > y_max:
+            break
+
+          let x_sample = int(round(x_pos))
+          let y_sample = int(round(y_pos))
+
+          if x_sample < 0 or x_sample >= Nx or y_sample < 0 or y_sample >= Ny:
+            break
+
+          let v = sim.v[x_sample, y_sample]
+          let speed = v.abs
+          if speed <= min_visible_speed:
+            break
+
+          let x_dir = v.x / speed
+          let y_dir = v.y / speed
+
+          let x_next = x_pos + direction_sign * step_size_pixels * x_dir
+          let y_next = y_pos + direction_sign * step_size_pixels * y_dir
+
+          var x0 = int(round(x_pos))
+          var y0 = int(round(y_pos))
+          let x1 = int(round(x_next))
+          let y1 = int(round(y_next))
+
+          # Skip zero-length segments caused by rounding.
+          if x0 == x1 and y0 == y1:
+            x_pos = x_next
+            y_pos = y_next
+            inc step_count
+            continue
+
+          # Pixel-perfect 1px Bresenham segment.
+          # Important: do NOT draw the final endpoint of each segment, so adjacent
+          # segments do not double-plot joints (which creates "extra pixels").
+          let dx_abs = abs(x1 - x0)
+          let dy_abs = abs(y1 - y0)
+          let x_step = (if x0 < x1: 1 else: -1)
+          let y_step = (if y0 < y1: 1 else: -1)
+          var error = dx_abs - dy_abs
+
+          while true:
+            # Stop before drawing the final endpoint; next segment will start there.
+            if x0 == x1 and y0 == y1:
+              break
+
+            if x0 >= 0 and x0 < Nx and y0 >= 0 and y0 < Ny:
+              image.data[y0 * Nx + x0] = line_color
+
+            let double_error = 2 * error
+            if double_error > -dy_abs:
+              error -= dy_abs
+              x0 += x_step
+            if double_error < dx_abs:
+              error += dx_abs
+              y0 += y_step
+
+          # Advance integrator state.
+          x_pos = x_next
+          y_pos = y_next
+
+          # Early out if we've left the image.
+          if x_pos < x_min or x_pos > x_max or y_pos < y_min or y_pos > y_max:
+            break
+
+          inc step_count
+
+      seed_x += sample_stride
+    seed_y += sample_stride

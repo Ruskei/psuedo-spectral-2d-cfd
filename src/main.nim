@@ -75,7 +75,7 @@ proc main() =
     if sim.t > float64(snapshots_taken + 1) * snapshot_interval:
       inc snapshots_taken
       var progress_image = sim.visualize_vorticity
-      draw_quiver_overlay(progress_image, sim, stride, qcm_black)
+      draw_streamline_overlay(progress_image, sim, 11, qcm_black)
       progress_image.write_file("images/progress" & $sim.t & ".png")
 
   let finished_sim = get_mono_time()
